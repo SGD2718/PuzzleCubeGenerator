@@ -79,14 +79,22 @@ class Point3D:
         else:
             return np.array_equal(self.point, point2.point)
 
-    def project(self, camera={'pos': (0, 0, -1000), 'theta': (0, 0, 0)}):
+    def project(self, camera={'pos': (0, 0, -1000), 'theta': (0, 0, 0)}, perspective=True):
+        cz = camera.z
         camera = Camera3D(camera=camera)
         p = self - camera
         if not np.array_equal(camera.theta, np.zeros(3)):
             p.rotate(-camera.theta, camera.pos)
-        projCoord = lambda c: -camera.FoV * c / p.z
-        x2d = projCoord(p.x)
-        y2d = projCoord(p.y)
+
+        if perspective:
+            def proj_coord(c):
+                return -camera.FoV * c / p.z
+        else:
+            def proj_coord(c):
+                return 1000 *c / (cz + 1)
+
+        x2d = proj_coord(p.x)
+        y2d = proj_coord(p.y)
         return x2d + SCREEN_WIDTH * 0.5, y2d + SCREEN_HEIGHT * 0.5
 
     def dist_to(self, point2):
@@ -223,6 +231,7 @@ class Solid3D:
         self.vertices = np.array(list(map(Point3D, vertices)))
         self.faces = list(map(list, faces))
         self.color = np.array(color) if color is not None else None
+        self.facesRendered = len(self.faces) // 2
 
         if center is None:
             self.center = self.median()
@@ -247,6 +256,8 @@ class Solid3D:
         copies the solid then rotates it"""
         if cor is None:
             cor = self.center
+        else:
+            cor = Point3D(cor)
         R = self.center.rotation_matrix(theta)
         return Solid3D([np.dot(R, (p - cor).point) + cor.point for p in self.vertices],
                        self.faces,
@@ -317,14 +328,14 @@ class Solid3D:
         point = Point3D(point)
         # return self.shift(point-self.center)
 
-    def project(self, camera=Camera3D(pos=(0, 0, -1000), theta=(0, 0, 0))):
-        return np.array([p.project(camera) for p in self.vertices])
+    def project(self, camera=Camera3D(pos=(0, 0, -1000), theta=(0, 0, 0)), perspective=True):
+        return np.array([p.project(camera, perspective) for p in self.vertices])
 
     def median(self):
         return np.sum(self.vertices) / np.shape(self.vertices)[0]
 
     def draw_shadow(self, surface, color=(50, 50, 50), camera=Camera3D(pos=(0, 0, -1000), theta=(0, 0, 0)),
-                    offset=(0, 0, 0), theta=(0, 0, 0)):
+                    offset=(0, 0, 0), theta=(0, 0, 0), perspective=True):
         """draws the solid's shadow"""
         offset = Point3D(offset)
         theta = np.add(camera.theta, np.array(theta))
@@ -337,7 +348,7 @@ class Solid3D:
         for p in self.vertices:
             p.set_y(self.center.y)
             p.set(np.dot(R2, np.dot(R1, (p - camera).point) + (offset - self.center).point) + self.center.point)
-            shadow.append(p.project(camera))
+            shadow.append(p.project(camera, perspective))
         shadow = np.array(shadow)
 
         # draw
@@ -365,6 +376,7 @@ class Solid3D:
         cor = kwargs['cor'] if 'cor' in kwargs else self.center
         pos = kwargs['pos'] if 'pos' in kwargs else self.center
         offset = kwargs['offset'] if 'offset' in kwargs else Point3D(0, 0, 0)
+        perspective = kwargs['perspective'] if 'perspective' in kwargs else True
 
         # copy solid
         newSolid = self.get_rotated(theta, cor)
@@ -374,9 +386,10 @@ class Solid3D:
         newSolid.place(pos + offset)
 
         # apply camera
+        cz = camera.z + 0
         newSolid.shift(-camera.point)
         newSolid.rotate(-camera.theta, camera.point)
-        camera.set((0, 0, 0), (0, 0, 0))
+        camera.set((0, 0, 0 if perspective else cz), (0, 0, 0))
 
         # check if the object is in front of the camera
         if newSolid.median().z > camera.z:
@@ -395,7 +408,7 @@ class Solid3D:
             else:
                 faceDepths += 1
 
-            projection = np.array([p.project(camera) for p in newSolid.vertices])
+            projection = np.array([p.project(camera, perspective) for p in newSolid.vertices])
 
             # draw shadow
             drawShadow = kwargs['shadow'] if 'shadow' in kwargs else False
@@ -404,17 +417,19 @@ class Solid3D:
                 shadowTheta = kwargs['shadowTheta'] if 'shadowTheta' in kwargs else (0, 0, 0)
                 shadowOffset = kwargs['shadowOffset'] if 'shadowOffset' in kwargs else Point3D(0, 0, 0)
                 shadowColor = kwargs['shadowColor'] if 'shadowColor' in kwargs else (50, 50, 50)
-                newSolid.draw_shadow(surface, shadowColor, camera, shadowOffset, shadowTheta)
+                newSolid.draw_shadow(surface, shadowColor, camera, shadowOffset, shadowTheta, perspective=perspective)
 
             # draw solid
             outline = kwargs['outline'] if 'outline' in kwargs else -1
 
-            for i, face in enumerate(orderedFaces[3:]):
+            for i, face in enumerate(orderedFaces[self.facesRendered:]):
                 if self.color is not None:
-                    pygame.draw.polygon(surface, tuple(self.color * faceDepths[i+3]), list(projection[face]))
+                    pygame.draw.polygon(surface,
+                                        tuple(self.color * faceDepths[i+self.facesRendered]),
+                                        list(projection[face]))
                 if outline > 0:
                     pygame.draw.polygon(surface,
-                                        tuple(np.array([50, 50, 50]) * faceDepths[i+3]),
+                                        tuple(np.array([50, 50, 50]) * faceDepths[i+self.facesRendered]),
                                         list(projection[face]),
                                         outline)
 
